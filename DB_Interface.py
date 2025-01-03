@@ -1,12 +1,12 @@
 from hashlib import sha256
 from io import BytesIO
 import math
+import bcrypt
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import mysql.connector
 import pandas as pd
 
-# MySQL database connection
 def get_db_connection():
     return mysql.connector.connect(
         host="localhost",
@@ -17,9 +17,9 @@ def get_db_connection():
 
 def hash_password(password: str) -> str:
     """
-    Hashes a password using SHA256.
+    Hashes a password using bcrypt.
     """
-    return sha256(password.encode()).hexdigest()
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
 
 def create_account(data: dict):
     """
@@ -91,8 +91,8 @@ def login(data: dict):
 
         stored_hashed_password, username, role, company_id, user_id = record
 
-        # Compare the input password hash with the stored hash
-        if hash_password(password) != stored_hashed_password:
+        # Compare the input password hash with the stored hash using bcrypt
+        if not bcrypt.checkpw(password.encode('utf-8'), stored_hashed_password.encode('utf-8')):
             raise HTTPException(status_code=401, detail="Invalid credentials.")
 
         # Return the required details on successful login
@@ -145,8 +145,7 @@ def get_company_users(company_id: int):
     except Exception as e:
         # Catch any other exceptions
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-    
-# Function to insert a new company into the companies table
+
 def new_company(data: dict):
     """
     Inserts a new company into the companies table.
@@ -167,10 +166,10 @@ def new_company(data: dict):
 
         # Insert query
         query = """
-        INSERT INTO companies (company_name, title, company_subname, description, website_url)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO companies (company_name, title, company_subname, description, website_url, isAuth)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """
-        values = (company_name, title, company_subname, description, website_url)
+        values = (company_name, title, company_subname, description, website_url, False)
         cursor.execute(query, values)
         connection.commit()
 
@@ -183,7 +182,6 @@ def new_company(data: dict):
         if connection:
             connection.close()
 
-# Function to update company details in the companies table
 def update_company_details(company_id: int, data: dict):
     """
     Updates details for a specific company in the companies table.
@@ -203,6 +201,10 @@ def update_company_details(company_id: int, data: dict):
             if key in ["company_name", "title", "company_subname", "description", "website_url"]:
                 update_fields.append(f"{key} = %s")
                 values.append(value)
+
+        # Always set isAuth to False
+        update_fields.append("isAuth = %s")
+        values.append(False)
 
         if not update_fields:
             raise HTTPException(status_code=400, detail="No valid fields provided for update.")
@@ -292,6 +294,8 @@ def update_users(data: dict, company_id: int):
             print("email : ", email)
             print("role : ", role)
 
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
             # Check if the user already exists in the database
             cursor.execute("""
                 SELECT user_id FROM company_logins WHERE email = %s AND company_id = %s
@@ -314,7 +318,7 @@ def update_users(data: dict, company_id: int):
                 INSERT INTO company_logins (email, company_id, role, username, password, company_name)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """
-                cursor.execute(insert_query, (email, company_id, role, username, password, company_name))
+                cursor.execute(insert_query, (email, company_id, role, username, hashed_password, company_name))
                 print("New user added..... ")
                 # Append newly inserted user id to incoming_user_ids
                 incoming_user_ids.append(cursor.lastrowid)
@@ -439,8 +443,8 @@ def file_upload_new_profile(file_contents: bytes, company_id: int):
             query = """
             INSERT INTO profiles 
             (user_id, profile_title, primary_phone, secondary_phone, email1, email2, address1, 
-            company_name, city, pincode, country, company_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            company_name, city, pincode, country, company_id, isAuth)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             cursor.execute(query, (
                 user_id,
@@ -454,7 +458,8 @@ def file_upload_new_profile(file_contents: bytes, company_id: int):
                 city,
                 pincode,
                 country,
-                company_id
+                company_id,
+                False
             ))
 
         # Commit the changes and close the connection
@@ -589,7 +594,9 @@ def update_emp(data: dict):
                 update_fields.append(f"{column_map[key]} = %s")
                 values.append(value)
         
-        print(data)
+        # Always set isAuth to False
+        update_fields.append("isAuth = %s")
+        values.append(False)
 
         if not update_fields:
             raise HTTPException(status_code=400, detail="No valid fields provided for update.")
@@ -612,6 +619,122 @@ def update_emp(data: dict):
             raise HTTPException(status_code=404, detail="Profile not found.")
 
         return {"message": "Profile details updated successfully."}
+
+    except mysql.connector.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+    finally:
+        if connection:
+            connection.close()
+
+def download_profiles_as_excel(company_id: int):
+    try:
+        # Database connection
+        conn = get_db_connection()  # Replace with your database connection logic
+        cursor = conn.cursor()
+
+        # Fetch filtered profiles data
+        query = """
+        SELECT user_id, profile_title, primary_phone, secondary_phone, email1, email2, 
+               address1, company_name, city, pincode, country
+        FROM profiles
+        WHERE isAuth = 0 AND company_id = %s
+        """
+        cursor.execute(query, (company_id,))
+        rows = cursor.fetchall()
+
+        # Column names for the Excel file (excluding isAuth)
+        columns = [
+            "User ID", "Profile Title", "Primary Phone", "Secondary Phone",
+            "Primary Email", "Secondary Email", "Address", "Company Name",
+            "City", "Pincode", "Country"
+        ]
+
+        # Create a DataFrame from the fetched rows
+        df = pd.DataFrame(rows, columns=columns)
+
+        # Create an Excel file in memory
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Profiles")
+
+        # Prepare the file for download
+        output.seek(0)
+        headers = {
+            "Content-Disposition": 'attachment; filename="profiles_data.xlsx"',
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+
+        # Return the Excel file as a streaming response
+        return StreamingResponse(output, headers=headers)
+
+    except Exception as e:
+        print(f"Exception: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+
+    finally:
+        # Close the cursor and connection
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if 'conn' in locals() and conn.is_connected():
+            conn.close()
+
+def update_company_auth_status(company_id: int):
+    """
+    Updates the isAuth column to True for a specific company in the companies table.
+    :param company_id: The ID of the company to update.
+    :return: Success message on successful update.
+    """
+    connection = None
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor()
+
+        # Update query to set isAuth to True
+        query = """
+        UPDATE companies
+        SET isAuth = %s, updated_at = CURRENT_TIMESTAMP
+        WHERE company_id = %s
+        """
+        cursor.execute(query, (True, company_id))
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Company not found.")
+
+        return {"message": "Company authentication status updated successfully."}
+
+    except mysql.connector.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+    finally:
+        if connection:
+            connection.close()
+
+def update_employee_auth_status(company_id: int):
+    """
+    Updates the isAuth column to True for a specific company in the companies table.
+    :param company_id: The ID of the company to update.
+    :return: Success message on successful update.
+    """
+    connection = None
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor()
+
+        # Update query to set isAuth to True
+        query = """
+        UPDATE profiles
+        SET isAuth = %s
+        WHERE company_id = %s
+        """
+        cursor.execute(query, (True, company_id))
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Company not found.")
+
+        return {"message": "Company authentication status updated successfully."}
 
     except mysql.connector.Error as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")

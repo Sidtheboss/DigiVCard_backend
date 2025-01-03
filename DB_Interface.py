@@ -413,6 +413,9 @@ def file_upload_new_profile(file_contents: bytes, company_id: int):
             city = clean_value(row_data.get("city"))
             pincode = clean_value(row_data.get("pincode"))
             country = clean_value(row_data.get("country"))
+            designation = clean_value(row_data.get("designation"))
+            qualification = clean_value(row_data.get("qualification"))
+
 
             print("Processed row:", {
                 "profile_title": profile_title,
@@ -423,7 +426,9 @@ def file_upload_new_profile(file_contents: bytes, company_id: int):
                 "address1": address1,
                 "city": city,
                 "pincode": pincode,
-                "country": country
+                "country": country,
+                "designation": designation,
+                "qualification": qualification
             })
 
             # Fetch user_id using primary_phone (this should be unique in the users table)
@@ -443,9 +448,10 @@ def file_upload_new_profile(file_contents: bytes, company_id: int):
             query = """
             INSERT INTO profiles 
             (user_id, profile_title, primary_phone, secondary_phone, email1, email2, address1, 
-            company_name, city, pincode, country, company_id, isAuth)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            company_name, city, pincode, country, company_id, isAuth, qualification, designation)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
+
             cursor.execute(query, (
                 user_id,
                 profile_title,
@@ -459,8 +465,13 @@ def file_upload_new_profile(file_contents: bytes, company_id: int):
                 pincode,
                 country,
                 company_id,
-                False
+                False,
+                qualification,
+                designation
             ))
+
+
+            print(query)
 
         # Commit the changes and close the connection
         conn.commit()
